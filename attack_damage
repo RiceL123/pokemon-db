@@ -1,0 +1,194 @@
+#! /usr/bin/env python3
+
+
+"""
+COMP3311
+23T1
+Assignment 2
+Pokemon Database
+
+Written by: ERIC LIAO z5422235
+Written on: 01/04/2023
+
+Attack Damage
+
+Given the name of an attacking, and a defending pokemon along with the name of a game in the Pokemon series,
+display a list, ordered from lowest to highest damage,
+of all the moves the attacking pokemon could use on the defending pokemon in the given game.
+"""
+
+
+import sys
+import psycopg2
+import helpers
+
+
+### Constants
+USAGE = f"Usage: {sys.argv[0]} <Attacking Pokemon Name> <Defending Pokemon Name> <Pokemon Game Name>"
+
+
+### Globals
+db = None
+Attacking_Pokemon_Name = None
+Defending_Pokemon_Name = None
+Pokemon_Game_Name      = None
+
+
+### Command-line args
+if len(sys.argv) != 4:
+    print(USAGE, file=sys.stderr)
+    sys.exit(1)
+Attacking_Pokemon_Name = helpers.clean(sys.argv[1])
+Defending_Pokemon_Name = helpers.clean(sys.argv[2])
+Pokemon_Game_Name      = helpers.clean(sys.argv[3])
+
+def AttackingPokemonStats(cur, pokemonName):
+    query = """
+    SELECT id, (base_stats).attack, (base_stats).special_attack, first_type, second_type
+    FROM pokemon
+    WHERE name = %s
+    """
+
+    cur.execute(query, [pokemonName])
+
+    pokemon = cur.fetchone()
+    if not pokemon:
+        print(f"'{pokemonName}' isn't a Pokemon that exists.", file=sys.stderr)
+        sys.exit(1)
+
+    return pokemon
+
+def DefendingPokemonStats(cur, pokemonName):
+    query = """
+    SELECT id, (base_stats).defense, (base_stats).special_defense, first_type, second_type
+    FROM pokemon
+    WHERE name = %s
+    """
+
+    cur.execute(query, [pokemonName])
+
+    pokemon = cur.fetchone()
+    if not pokemon:
+        print(f"'{pokemonName}' isn't a Pokemon that exists.", file=sys.stderr)
+        sys.exit(1)
+
+    return pokemon
+
+def validGameCheck(cur, gameName):
+    query = """
+    SELECT id
+    FROM games
+    WHERE name = %s
+    """
+
+    cur.execute(query, [gameName])
+    
+    gameId = cur.fetchone()
+    if not gameId:
+        print(f"'Pokemon {gameName}' isn't a game in the Pokemon series.", file=sys.stderr)
+        sys.exit(1)
+
+    return gameId[0]
+
+def validPokemonInGames(cur, gameId, pokemonIds, gameName):
+    for pokemon in pokemonIds:
+        query = """
+        SELECT *
+        FROM pokedex
+        WHERE national_id = %s::pokemon_id
+        AND game = %s
+        """
+
+        cur.execute(query, [pokemon[0], gameId])
+        if not cur.fetchone():
+            print(f"'{pokemon[1]}' doesn't appear in 'Pokemon {gameName}'.", file=sys.stderr)
+            sys.exit(1)
+
+# calculates the multiplier of an move's attack type based on the defending pokemon's types
+def calculateMultiplier(cur, attackType, Dtypes: list):
+    multiplier = 1
+
+    for defendType in Dtypes:
+        query = """
+        SELECT multiplier
+        FROM type_effectiveness
+        WHERE attacking = %s
+        AND defending = %s
+        """
+
+        cur.execute(query, [attackType, defendType])
+        
+        effectiveness = cur.fetchone()
+        
+        if effectiveness:
+            multiplier *= effectiveness[0] / 100
+    
+    return multiplier
+
+# returns all the moves minDmg and maxDmg that a pokemon can attack the defending pokemon which deals more than 0 damage
+def getMoves(cur, gameId, APokemonId, Atypes: list, AAttack, ASpecialAttack, DDefense, DSpecialDefense, Dtypes: list):
+    query = """
+    SELECT DISTINCT m.name, m.power, m.category, m.of_type
+    FROM learnable_moves AS lm
+    INNER JOIN moves AS m ON lm.learns = m.id
+    WHERE learnt_by = %s::pokemon_id
+    AND learnt_in = %s
+    AND power IS NOT NULL
+    """
+
+    cur.execute(query, [APokemonId, gameId])
+    
+    movesQuery = cur.fetchall()
+
+    if not movesQuery:
+        print(f"In 'Pokemon {Pokemon_Game_Name}', '{Attacking_Pokemon_Name}' can't attack '{Defending_Pokemon_Name}'.")
+        sys.exit(0)
+
+    moves = []
+    for move, movePower, moveCategory, moveType in movesQuery:
+        # calculate the effectiveness depending on the move and the defending pokemon's types
+        typeEffectiveness = calculateMultiplier(cur, moveType, Dtypes)
+
+        attacker_attack = ASpecialAttack if moveCategory == 'Special' else AAttack
+        defender_defense = DSpecialDefense if moveCategory == 'Special' else DDefense
+
+        stab = 1.5 if moveType in Atypes else 1
+        
+        minDmg = int(round(((((((2 * 1) / 5) + 2) * movePower * (attacker_attack / defender_defense)) / 50) + 2) * 0.85 * stab * typeEffectiveness, 1))
+        maxDmg = int(round(((((((2 * 100) / 5) + 2) * movePower * (attacker_attack / defender_defense)) / 50) + 2) * 1 * stab * typeEffectiveness, 1))
+        
+        if maxDmg != 0: 
+            moves.append({'name': move, 'minDmg': minDmg, 'maxDmg': maxDmg})
+        
+    return moves
+
+def main():
+    cur = db.cursor()
+
+    APokemonId, AAttack, ASpecialAttack, AFirstType, ASecondType = AttackingPokemonStats(cur, Attacking_Pokemon_Name)
+    DPokemonId, DDefense, DSpecialDefense, DFirstType, DSecondType = DefendingPokemonStats(cur, Defending_Pokemon_Name)
+
+    gameId = validGameCheck(cur, Pokemon_Game_Name)
+
+    validPokemonInGames(cur, gameId, [(APokemonId, Attacking_Pokemon_Name), (DPokemonId, Defending_Pokemon_Name)], Pokemon_Game_Name)
+
+    moves = getMoves(cur, gameId, APokemonId, [AFirstType, ASecondType], AAttack, ASpecialAttack, DDefense, DSpecialDefense, [DFirstType, DSecondType])
+
+    print(f"In 'Pokemon {Pokemon_Game_Name}', When '{Attacking_Pokemon_Name}' attacks '{Defending_Pokemon_Name}', '{Attacking_Pokemon_Name}' can use the following moves:\n")
+
+    for move in sorted(moves, key=lambda x: (x['maxDmg'], x['minDmg'], x['name'])):
+        print(f"'{move['name']}' for a minimum of {move['minDmg']} damage and a maximum of {move['maxDmg']} damage to '{Defending_Pokemon_Name}'.")
+        
+if __name__ == '__main__':
+    try:
+        db = psycopg2.connect(dbname="ass2")
+        main()
+    except psycopg2.Error as err:
+        print("DB error: ", err)
+    except Exception as err:
+        print("Internal Error: ", err)
+        raise err
+    finally:
+        if db is not None:
+            db.close()
+    sys.exit(0)

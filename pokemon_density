@@ -1,0 +1,128 @@
+#! /usr/bin/env python3
+
+
+"""
+COMP3311
+23T1
+Assignment 2
+Pokemon Database
+
+Written by: ERIC LIAO z5422235
+Written on: 05/04/2023
+
+Pokemon Density
+
+Find the density of pokemon in each location within a given region.
+"""
+
+
+import sys
+import psycopg2
+import helpers
+
+import math
+### Constants
+USAGE = f"Usage: {sys.argv[0]} <Region>"
+
+
+### Globals
+db = None
+Region = None
+
+
+### Command-line args
+if len(sys.argv) != 2:
+    print(USAGE, file=sys.stderr)
+    sys.exit(1)
+Region = helpers.clean(sys.argv[1])
+
+# calculate the density of a pariticular location & game
+def gameLocationDensity(cur, gameId, location) -> float:
+    query = """
+    SELECT p.average_height, p.average_weight, e.rarity
+    FROM pokemon AS p
+    INNER JOIN encounters AS e ON e.occurs_with = p.id
+    INNER JOIN locations AS l ON l.id = e.occurs_at
+    WHERE l.name = %s
+    AND l.appears_in = %s
+    """
+
+    cur.execute(query, [location, gameId])
+    
+    density = 0
+    gameCount = 1
+
+    pokemonStats = cur.fetchall()
+
+    if not pokemonStats:
+        gameCount = 0
+
+    for height, weight, rarity in pokemonStats:
+        volume = (4/3) * math.pi * ((height * 100) / 2) ** 3
+        density += ((weight * 1000) / volume) * (rarity / 100)
+
+    return density, gameCount
+
+# given a region, print all the avearage density of all the games within a locations
+def printLocationDensities(cur, region):
+    query = """
+    SELECT l.name, array_agg(g.id)
+    FROM games AS g
+    INNER JOIN locations AS l ON l.appears_in = g.id
+    WHERE region = %s
+    GROUP BY l.name
+    """
+
+    try: 
+        cur.execute(query, [region])
+    except:
+        print(f"'{region}' isn't a region in the Pokemon series.", file=sys.stderr)
+        sys.exit(1)
+
+    locations = []
+    noEncounterLocations = []
+
+    for location, games in cur.fetchall():
+
+        gameDensitySum = 0
+        numGames = 0
+
+        # for each game, check check if there are any encounters and the density of that game
+        for game in games:
+            gameDensity, gameCount = gameLocationDensity(cur, game, location)
+            gameDensitySum += gameDensity
+            numGames += gameCount
+
+        if not numGames:
+            noEncounterLocations.append((location))
+        else:
+            locations.append((location, gameDensitySum / numGames))
+
+    print(f"The average density of Pokemon within each location in the '{region}' region:")
+
+    # if sort by the density decreasing, then by the location name
+    for location, density in sorted(locations, key=lambda x: (-x[1], x[0])):
+        print(f"{location}: {round(density, 4):.4f}")
+
+    print(f"The following locations in the '{region}' region have no wild Pokemon encounters:")
+    for location in sorted(noEncounterLocations):
+        print(f"{location}")
+
+def main():
+    cur = db.cursor()
+
+    printLocationDensities(cur, Region)
+
+if __name__ == '__main__':
+    try:
+        db = psycopg2.connect(dbname="ass2")
+        main()
+    except psycopg2.Error as err:
+        print("DB error: ", err)
+    except Exception as err:
+        print("Internal Error: ", err)
+        raise err
+    finally:
+        if db is not None:
+            db.close()
+    sys.exit(0)

@@ -1,0 +1,132 @@
+#! /usr/bin/env python3
+
+
+"""
+COMP3311
+23T1
+Assignment 2
+Pokemon Database
+
+Written by: ERIC LIAO z5422235
+Written on: 05/04/2023
+
+Encounter Summary
+
+Print a summary of all the Pokemon that can be encountered at a given location in a given game
+"""
+
+
+import sys
+import psycopg2
+import helpers
+
+
+### Constants
+USAGE = f"Usage: {sys.argv[0]} <Location> <Game>"
+
+
+### Globals
+db = None
+Location = None
+Game = None
+
+
+### Command-line args
+if len(sys.argv) != 3:
+    print(USAGE, file=sys.stderr)
+    sys.exit(1)
+Location = helpers.clean(sys.argv[1])
+Game     = helpers.clean(sys.argv[2])
+
+# print all the possible pokemon encounters with relevant stats in a given location & game 
+def getEncounters(cur, location, game):
+    query = """
+    SELECT
+        e.id,
+        p.name, 
+        t1.name, 
+        t2.name,
+        e.rarity,
+        (e.levels).min,
+        (e.levels).max,
+        string_agg(DISTINCT eg.name, ', ' ORDER BY eg.name),
+        array_agg(ka.hidden),
+        array_agg(a.name),
+        array_agg(er.inverted),
+        array_agg(r.assertion)
+    FROM pokemon                        AS p
+    INNER JOIN encounters               AS e ON e.occurs_with = p.id
+    INNER JOIN encounter_requirements   AS er ON er.encounter = e.id
+    INNER JOIN requirements             AS r ON r.id = er.requirement
+    INNER JOIN types                    AS t1 ON t1.id = p.first_type
+    LEFT JOIN types                     AS t2 ON t2.id = p.second_type
+    LEFT JOIN in_group                  AS ig ON ig.pokemon = p.id
+    LEFT JOIN egg_groups                AS eg ON eg.id = ig.egg_group
+    LEFT JOIN knowable_abilities        AS ka ON ka.known_by = p.id
+    LEFT JOIN abilities                 AS a ON a.id = ka.knows
+    INNER JOIN locations                AS l ON l.id = e.occurs_at
+    INNER JOIN games AS                 g ON g.id = l.appears_in
+    WHERE l.name = %s
+    AND g.name = %s
+    GROUP BY e.id, p.id, p.name, t1.name, t2.name, e.rarity, e.levels
+    ORDER BY e.rarity DESC, p.name, (e.levels).max
+    """
+
+    cur.execute(query, [location, game])
+
+    print(f"In 'Pokemon {game}' at '{location}' the following Pokemon can be Encountered:\n")
+    for _, name, first_type, second_type, rarity, minLevel, maxLevel, egg_groups, isHidden, abilities, inverted, requirements in cur.fetchall():
+        print(f"{name}:")
+        print(f"\tType: {'/'.join(x for x in [first_type, second_type] if x)}")
+        print(f"\tRarity: {rarity}%")
+        print(f"\tLevels: min {minLevel}, max {maxLevel}")
+        
+        # if there are no egg groups, do not print
+        if egg_groups:
+            print(f"\tEgg Groups: {egg_groups}")
+
+        # if there are no abilities that aren't hidden do not print
+        availableAbilities = sorted(set(filter(lambda x: not x[0] and x[1], zip(isHidden, abilities))), key=lambda x: x[1])
+        if availableAbilities:
+            print(f"\tAbilities: {', '.join(map(lambda x: x[1], availableAbilities))}")
+
+        # if requirement is inverted add a NOT in front
+        encounterRequirements = sorted(set(zip(inverted, requirements)), key=lambda x: x[1])
+        requirements = '\n'.join(map(lambda x: f'NOT {x[1]}' if x[0] else x[1], encounterRequirements))
+        print(f"\tEncounter Requirements:\n{requirements}\n")
+
+def main():
+    cur = db.cursor()
+
+    cur.execute("SELECT name FROM locations WHERE name = %s", [Location])
+    if not cur.fetchone():
+        print(f"'{Location}' isn't a location in the Pokemon series.", file=sys.stderr)
+        sys.exit(1)
+    
+    cur.execute("SELECT id FROM games WHERE name = %s", [Game])
+    gameId = cur.fetchone()
+    if not gameId:
+        print(f"'Pokemon {Game}' isn't a game in the Pokemon series.", file=sys.stderr)
+        sys.exit(1)
+    
+    cur.execute("SELECT name FROM locations WHERE appears_in = %s AND name = %s", [gameId[0], Location])
+    if not cur.fetchone():
+        print(f"'{Location}' isn't in 'Pokemon {Game}'.", file=sys.stderr)
+        sys.exit(1)  
+
+    getEncounters(cur, Location, Game)
+
+
+if __name__ == '__main__':
+    try:
+        db = psycopg2.connect(dbname="ass2")
+        main()
+    except psycopg2.Error as err:
+        print("DB error: ", err)
+    except Exception as err:
+        print("Internal Error: ", err)
+        raise err
+    finally:
+        if db is not None:
+            db.close()
+    sys.exit(0)

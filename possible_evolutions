@@ -1,0 +1,139 @@
+#! /usr/bin/env python3
+
+
+"""
+COMP3311
+23T1
+Assignment 2
+Pokemon Database
+
+Written by: ERIC LIAO z5422235
+Written on: 05/04/2023
+
+Possible Evolutions
+
+Given the name of a pokemon,
+display a list of all the pokemon that could evolve into the given pokemon,
+and a list of all the pokemon that the given pokemon could evolve into.
+"""
+
+
+import sys
+import psycopg2
+import helpers
+
+
+### Constants
+USAGE = f"Usage: {sys.argv[0]} <Pokemon Name>"
+
+
+### Globals
+db = None
+Pokemon_Name = None
+
+
+### Command-line args
+if len(sys.argv) != 2:
+    print(USAGE, file=sys.stderr)
+    sys.exit(1)
+Pokemon_Name = helpers.clean(sys.argv[1])
+
+def getPokemonId(cur, Pokemon_Name: str):
+    query = """
+    SELECT id
+    FROM pokemon
+    WHERE name = %s
+    """
+
+    cur.execute(query, [Pokemon_Name])
+
+    return cur.fetchone()
+
+def getRequirements(cur, evolutionId) -> str:
+    query = """
+    SELECT e.inverted, r.assertion
+    FROM evolution_requirements AS e
+    INNER JOIN requirements AS r ON r.id = e.requirement
+    WHERE e.evolution = %s
+    ORDER BY e.evolution, e.inverted, r.id
+    """
+
+    cur.execute(query, [evolutionId])
+
+    requirements = cur.fetchall()
+
+    # if the requirement (x[1]) is inverted (x[0] = True), add a NOT infront else leave as is
+    return '\nAND\n'.join(map(lambda x: f"NOT {x[1]}" if x[0] else f"{x[1]}", requirements))
+
+def printPreEvolutions(cur, PokemonId, PokemonName):
+    query = """ 
+    SELECT pre.name, array_agg(e.id)
+    FROM evolutions AS e
+    INNER JOIN pokemon AS pre ON pre.id = e.pre_evolution
+    WHERE e.post_evolution = %s::pokemon_id
+    GROUP BY pre.id
+    ORDER BY pre.id
+    """
+
+    cur.execute(query, [PokemonId])
+
+    evolutions = cur.fetchall()
+
+    if not evolutions:
+        print(f"'{PokemonName}' doesn't have any pre-evolutions.")
+        return
+
+    print(f"'{PokemonName}' can evolve from:")
+    for name, evolutionIds in evolutions:
+        print(f"'{name}' when the following requirements are satisfied:")
+        print('\nOR\n'.join([getRequirements(cur, x) for x in evolutionIds]))
+
+def printPostEvolutions(cur, PokemonId, PokemonName):
+    query = """
+    SELECT post.name, array_agg(e.id)
+    FROM evolutions AS e
+    INNER JOIN pokemon AS post ON post.id = e.post_evolution
+    WHERE e.pre_evolution = %s::pokemon_id
+    GROUP BY post.id
+    ORDER BY post.id
+    """
+
+    cur.execute(query, [PokemonId])
+
+    evolutions = cur.fetchall()
+
+    if not evolutions:
+        print(f"'{PokemonName}' doesn't have any post-evolutions.")
+        return
+    
+    print(f"'{PokemonName}' can evolve into:")
+    for name, evolutionIds in evolutions:
+        print(f"'{name}' when the following requirements are satisfied:")
+        print('\nOR\n'.join([getRequirements(cur, x) for x in evolutionIds]))
+
+def main():
+    cur = db.cursor()
+
+    PokemonId = getPokemonId(cur, Pokemon_Name)
+
+    if not PokemonId:
+        print(f"'{Pokemon_Name}' isn't a Pokemon that exists.", file=sys.stderr)
+        exit(1)
+
+    printPreEvolutions(cur, PokemonId, Pokemon_Name)
+
+    printPostEvolutions(cur, PokemonId, Pokemon_Name)
+
+if __name__ == '__main__':
+    try:
+        db = psycopg2.connect(dbname="ass2")
+        main()
+    except psycopg2.Error as err:
+        print("DB error: ", err)
+    except Exception as err:
+        print("Internal Error: ", err)
+        raise err
+    finally:
+        if db is not None:
+            db.close()
+    sys.exit(0)
